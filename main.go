@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"runtime"
 	"sync"
@@ -10,8 +11,20 @@ import (
 	"github.com/garyburd/redigo/redis"
 )
 
+type config struct {
+	clients int
+}
+
 type statistics struct {
 	set int64
+}
+
+var (
+	conf config
+)
+
+func init() {
+	flag.IntVar(&conf.clients, "c", 50, "-c <clients>       Number of parallel connections (default 50)")
 }
 
 func setBenchmark(stat *statistics, repeatNum int) {
@@ -48,7 +61,20 @@ func print(closeChan chan struct{}, stat *statistics) {
 	}
 }
 
+func sanitizeFlag() {
+	flag.Parse()
+
+	if conf.clients < 0 || conf.clients > 3000 {
+		conf.clients = 50
+	}
+}
+
+func dumpConf() {
+}
+
 func main() {
+	sanitizeFlag()
+
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	var benchmakrWG sync.WaitGroup
@@ -56,7 +82,7 @@ func main() {
 	var stat statistics
 	closeChan := make(chan struct{}, 1)
 
-	for i := 0; i < 20; i++ {
+	for i := 0; i < conf.clients; i++ {
 		benchmakrWG.Add(1)
 		go func() {
 			setBenchmark(&stat, 1000000)
