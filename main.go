@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -12,15 +13,15 @@ import (
 )
 
 type config struct {
-	hostname string
-	port     int
-	socket   string
-	password string
-	clients  int
-	requests int
-	size     int
-	dbnum    int
-	keep     bool
+	hostname    string
+	port        int
+	socket      string
+	password    string
+	clientsNum  int
+	requestsNum int
+	size        int
+	dbnum       int
+	keep        bool
 }
 
 type statistics struct {
@@ -28,12 +29,13 @@ type statistics struct {
 }
 
 var (
-	conf config
+	conf    config
+	clients []redis.Conn
 )
 
 func init() {
-	flag.IntVar(&conf.clients, "c", 50, "-c <clients>       Number of parallel connections (default 50)")
-	flag.IntVar(&conf.requests, "n", 100000, "-n <requests>      Total number of requests (default 100000)")
+	flag.IntVar(&conf.clientsNum, "c", 50, "-c <clients>       Number of parallel connections (default 50)")
+	flag.IntVar(&conf.requestsNum, "n", 100000, "-n <requests>      Total number of requests (default 100000)")
 
 	flag.Usage = func() {
 		fmt.Printf(`Usage: redis-bench [-h <host>] [-p <port>] [-c <clients>] [-n <requests>] [-k <boolean>]
@@ -66,21 +68,21 @@ func init() {
 Examples:
 
  Run the benchmark with the default configuration against 127.0.0.1:6379:
-   $ redis-benchmark
+   $ redis-bench
 
  Use 20 parallel clients, for a total of 100k requests, against 192.168.1.1:
-   $ redis-benchmark -h 192.168.1.1 -p 6379 -n 100000 -c 20
+   $ redis-bench -h 192.168.1.1 -p 6379 -n 100000 -c 20
  Fill 127.0.0.1:6379 with about 1 million keys only using the SET test:
-   $ redis-benchmark -t set -n 1000000 -r 100000000
+   $ redis-bench -t set -n 1000000 -r 100000000
 
  Benchmark 127.0.0.1:6379 for a few commands producing CSV output:
-   $ redis-benchmark -t ping,set,get -n 100000 --csv
+   $ redis-bench -t ping,set,get -n 100000 --csv
 
  Benchmark a specific command line:
-   $ redis-benchmark -r 10000 -n 10000 eval 'return redis.call(\"ping\")' 0
+   $ redis-bench -r 10000 -n 10000 eval 'return redis.call(\"ping\")' 0
 
  Fill a list with 10000 random elements:
-   $ redis-benchmark -r 10000 -n 10000 lpush mylist __rand_int__
+   $ redis-bench -r 10000 -n 10000 lpush mylist __rand_int__
 
  On user specified command lines __rand_int__ is replaced with a random integer
  with a range of values selected by the -r option.
@@ -88,13 +90,8 @@ Examples:
 	}
 }
 
-func setBenchmark(stat *statistics, repeatNum int) {
-	c, err := redis.Dial("tcp", "localhost:6379")
-	if err != nil {
-		fmt.Println("Connect to redis error", err)
-		return
-	}
-
+func setBenchmark(stat *statistics, clientNum int, repeatNum int) {
+	c := clients[clientNum]
 	for i := 0; i < repeatNum; i++ {
 		c.Do("SET", "hello", fmt.Sprintf("world%d", i))
 		atomic.AddInt64(&stat.set, 1)
@@ -125,12 +122,24 @@ func print(closeChan chan struct{}, stat *statistics) {
 func sanitizeFlag() {
 	flag.Parse()
 
-	if conf.clients < 0 || conf.clients > 3000 {
-		conf.clients = 50
+	if conf.clientsNum < 0 || conf.clientsNum > 3000 {
+		conf.clientsNum = 50
 	}
 
-	if conf.requests < 1000 {
-		conf.requests = 100000
+	if conf.requestsNum < 1000 {
+		conf.requestsNum = 100000
+	}
+}
+
+func initClients() {
+	clients = make([]redis.Conn, conf.clientsNum)
+	for i := 0; i < conf.clientsNum; i++ {
+		client, err := redis.Dial("tcp", "localhost:6379")
+		if err != nil {
+			fmt.Println("Connect to redis error", err)
+			os.Exit(1)
+		}
+		clients[i] = client
 	}
 }
 
@@ -139,6 +148,7 @@ func dumpConf() {
 
 func main() {
 	sanitizeFlag()
+	initClients()
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -147,12 +157,12 @@ func main() {
 	var stat statistics
 	closeChan := make(chan struct{}, 1)
 
-	for i := 0; i < conf.clients; i++ {
+	for i := 0; i < conf.clientsNum; i++ {
 		benchmakrWG.Add(1)
-		go func() {
-			setBenchmark(&stat, conf.requests)
+		go func(clientNum int) {
+			setBenchmark(&stat, clientNum, conf.requestsNum)
 			benchmakrWG.Done()
-		}()
+		}(i)
 	}
 
 	wg.Add(1)
