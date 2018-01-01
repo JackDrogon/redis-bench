@@ -93,13 +93,14 @@ Examples:
 }
 
 func setBenchmark(stat *statistics, clientNum int, repeatNum int) {
-	c := clients[clientNum]
+	client := clients[clientNum]
 	for i := 0; i < repeatNum; i++ {
-		c.Do("SET", "hello", fmt.Sprintf("world%d", i))
+		client.Do("SET", "hello", fmt.Sprintf("world%d", i))
 		atomic.AddInt64(&stat.set, 1)
 	}
+}
 
-	defer c.Close()
+func pingBenchmark() {
 }
 
 func print(closeChan chan struct{}, stat *statistics) {
@@ -139,9 +140,16 @@ func initClients() {
 		client, err := redis.Dial("tcp", fmt.Sprintf("%s:%d", conf.hostname, conf.port))
 		if err != nil {
 			fmt.Println("Connect to redis error", err)
+			destroyClients(i)
 			os.Exit(1)
 		}
 		clients[i] = client
+	}
+}
+
+func destroyClients(activeClients int) {
+	for i := 0; i < activeClients; i++ {
+		clients[i].Close()
 	}
 }
 
@@ -151,6 +159,7 @@ func dumpConf() {
 func main() {
 	sanitizeFlag()
 	initClients()
+	defer destroyClients(conf.clientsNum)
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
