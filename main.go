@@ -36,6 +36,8 @@ var (
 func init() {
 	flag.IntVar(&conf.clientsNum, "c", 50, "-c <clients>       Number of parallel connections (default 50)")
 	flag.IntVar(&conf.requestsNum, "n", 100000, "-n <requests>      Total number of requests (default 100000)")
+	flag.StringVar(&conf.hostname, "-h", "127.0.0.1", "-h <hostname>      Server hostname (default 127.0.0.1)")
+	flag.IntVar(&conf.port, "-p", 6379, "-p <port>          Server port (default 6379)")
 
 	flag.Usage = func() {
 		fmt.Printf(`Usage: redis-bench [-h <host>] [-p <port>] [-c <clients>] [-n <requests>] [-k <boolean>]
@@ -134,7 +136,7 @@ func sanitizeFlag() {
 func initClients() {
 	clients = make([]redis.Conn, conf.clientsNum)
 	for i := 0; i < conf.clientsNum; i++ {
-		client, err := redis.Dial("tcp", "localhost:6379")
+		client, err := redis.Dial("tcp", fmt.Sprintf("%s:%d", conf.hostname, conf.port))
 		if err != nil {
 			fmt.Println("Connect to redis error", err)
 			os.Exit(1)
