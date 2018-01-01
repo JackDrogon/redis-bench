@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ type config struct {
 	size        int
 	dbnum       int
 	keep        bool
+	tests       string
 
 	runnableBenchmarks map[string]benchmarkFun
 }
@@ -48,6 +50,8 @@ func init() {
 	flag.IntVar(&conf.port, "p", 6379, "-p <port>          Server port (default 6379)")
 	flag.StringVar(&conf.password, "a", "", "-a <password>      Password for Redis Auth")
 	flag.IntVar(&conf.dbnum, "dbnum", 0, "--dbnum <db>       SELECT the specified db number (default 0)")
+	flag.StringVar(&conf.tests, "t", "", `-t <tests>         Only run the comma separated list of tests. The test
+                    names are the same as the ones produced as output.`)
 
 	flag.Usage = func() {
 		fmt.Printf(`Usage: redis-bench [-h <host>] [-p <port>] [-c <clients>] [-n <requests>] [-k <boolean>]
@@ -119,8 +123,8 @@ func pingBenchmark(stat *statistics, clientNum int, repeatNum int) {
 }
 
 func print(benchmarkName string, closeChan chan struct{}, stat *statistics) {
-	period := 1
-	ticker := time.NewTicker(1 * time.Second)
+	var period int64 = 100
+	ticker := time.NewTicker(time.Duration(period) * time.Millisecond)
 	defer ticker.Stop()
 	var last int64
 	var now int64
@@ -129,7 +133,7 @@ func print(benchmarkName string, closeChan chan struct{}, stat *statistics) {
 		select {
 		case <-ticker.C:
 			now = atomic.LoadInt64(&stat.hit)
-			fmt.Printf("%s: %d\n", benchmarkName, (now-last)/(int64)(period))
+			fmt.Printf("%s: %.3f\n", benchmarkName, float64(now-last)/(float64(period)/1000.0))
 			last = now
 		case <-closeChan:
 			return
@@ -154,7 +158,19 @@ func sanitizeFlag() {
 }
 
 func sanitizeBenchmarks() {
-	conf.runnableBenchmarks = benchmarks
+	if conf.tests == "" {
+		conf.runnableBenchmarks = benchmarks
+		return
+	}
+
+	conf.runnableBenchmarks = make(map[string]benchmarkFun)
+	tests := strings.Split(conf.tests, ",")
+	for _, benchmarkName := range tests {
+		benchmarkName = strings.ToUpper(benchmarkName)
+		if benchmarkCall, ok := benchmarks[benchmarkName]; ok {
+			conf.runnableBenchmarks[benchmarkName] = benchmarkCall
+		}
+	}
 }
 
 func createClients() (client redis.Conn, err error) {
