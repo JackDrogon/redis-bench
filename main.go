@@ -12,6 +12,12 @@ import (
 	"github.com/garyburd/redigo/redis"
 )
 
+type statistics struct {
+	hit int64
+}
+
+type benchmarkFun func(stat *statistics, clientNum int, repeatNum int)
+
 type config struct {
 	hostname    string
 	port        int
@@ -22,22 +28,26 @@ type config struct {
 	size        int
 	dbnum       int
 	keep        bool
-}
 
-type statistics struct {
-	set int64
+	runnableBenchmarks map[string]benchmarkFun
 }
 
 var (
-	conf    config
-	clients []redis.Conn
+	conf       config
+	clients    []redis.Conn
+	benchmarks = map[string]benchmarkFun{
+		"PING": pingBenchmark,
+		"SET":  setBenchmark,
+	}
 )
 
 func init() {
 	flag.IntVar(&conf.clientsNum, "c", 50, "-c <clients>       Number of parallel connections (default 50)")
 	flag.IntVar(&conf.requestsNum, "n", 100000, "-n <requests>      Total number of requests (default 100000)")
 	flag.StringVar(&conf.hostname, "-h", "127.0.0.1", "-h <hostname>      Server hostname (default 127.0.0.1)")
-	flag.IntVar(&conf.port, "-p", 6379, "-p <port>          Server port (default 6379)")
+	flag.IntVar(&conf.port, "p", 6379, "-p <port>          Server port (default 6379)")
+	flag.StringVar(&conf.password, "a", "", "-a <password>      Password for Redis Auth")
+	flag.IntVar(&conf.dbnum, "dbnum", 0, "--dbnum <db>       SELECT the specified db number (default 0)")
 
 	flag.Usage = func() {
 		fmt.Printf(`Usage: redis-bench [-h <host>] [-p <port>] [-c <clients>] [-n <requests>] [-k <boolean>]
@@ -96,14 +106,19 @@ func setBenchmark(stat *statistics, clientNum int, repeatNum int) {
 	client := clients[clientNum]
 	for i := 0; i < repeatNum; i++ {
 		client.Do("SET", "hello", fmt.Sprintf("world%d", i))
-		atomic.AddInt64(&stat.set, 1)
+		atomic.AddInt64(&stat.hit, 1)
 	}
 }
 
-func pingBenchmark() {
+func pingBenchmark(stat *statistics, clientNum int, repeatNum int) {
+	client := clients[clientNum]
+	for i := 0; i < repeatNum; i++ {
+		client.Do("PING")
+		atomic.AddInt64(&stat.hit, 1)
+	}
 }
 
-func print(closeChan chan struct{}, stat *statistics) {
+func print(benchmarkName string, closeChan chan struct{}, stat *statistics) {
 	period := 1
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -113,8 +128,8 @@ func print(closeChan chan struct{}, stat *statistics) {
 	for {
 		select {
 		case <-ticker.C:
-			now = atomic.LoadInt64(&stat.set)
-			fmt.Printf("Set qps %d\n", (now-last)/(int64)(period))
+			now = atomic.LoadInt64(&stat.hit)
+			fmt.Printf("%s: %d\n", benchmarkName, (now-last)/(int64)(period))
 			last = now
 		case <-closeChan:
 			return
@@ -132,12 +147,35 @@ func sanitizeFlag() {
 	if conf.requestsNum < 1000 {
 		conf.requestsNum = 100000
 	}
+
+	if conf.dbnum < 0 {
+		conf.dbnum = 0
+	}
+}
+
+func sanitizeBenchmarks() {
+	conf.runnableBenchmarks = benchmarks
+}
+
+func createClients() (client redis.Conn, err error) {
+	if client, err = redis.Dial("tcp", fmt.Sprintf("%s:%d", conf.hostname, conf.port)); err != nil {
+		return
+	}
+	if conf.password != "" {
+		if _, err = client.Do("AUTH", conf.password); err != nil {
+			return
+		}
+	}
+	if _, err = client.Do("SELECT", conf.dbnum); err != nil {
+		return
+	}
+	return
 }
 
 func initClients() {
 	clients = make([]redis.Conn, conf.clientsNum)
 	for i := 0; i < conf.clientsNum; i++ {
-		client, err := redis.Dial("tcp", fmt.Sprintf("%s:%d", conf.hostname, conf.port))
+		client, err := createClients()
 		if err != nil {
 			fmt.Println("Connect to redis error", err)
 			destroyClients(i)
@@ -156,13 +194,7 @@ func destroyClients(activeClients int) {
 func dumpConf() {
 }
 
-func main() {
-	sanitizeFlag()
-	initClients()
-	defer destroyClients(conf.clientsNum)
-
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
+func runBenchmark(benchmarkName string, benchmarkCall benchmarkFun) {
 	var benchmakrWG sync.WaitGroup
 	var wg sync.WaitGroup
 	var stat statistics
@@ -171,7 +203,7 @@ func main() {
 	for i := 0; i < conf.clientsNum; i++ {
 		benchmakrWG.Add(1)
 		go func(clientNum int) {
-			setBenchmark(&stat, clientNum, conf.requestsNum)
+			benchmarkCall(&stat, clientNum, conf.requestsNum/conf.clientsNum)
 			benchmakrWG.Done()
 		}(i)
 	}
@@ -184,9 +216,26 @@ func main() {
 	}()
 	wg.Add(1)
 	go func() {
-		print(closeChan, &stat)
+		print(benchmarkName, closeChan, &stat)
 		wg.Done()
 	}()
 
 	wg.Wait()
+}
+
+func runBenchmarks() {
+	for benchmarkName, benchmarkCall := range conf.runnableBenchmarks {
+		runBenchmark(benchmarkName, benchmarkCall)
+	}
+}
+
+func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	sanitizeFlag()
+	initClients()
+	defer destroyClients(conf.clientsNum)
+	sanitizeBenchmarks()
+
+	runBenchmarks()
 }
