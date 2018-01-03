@@ -38,8 +38,9 @@ var (
 	conf       config
 	clients    []redis.Conn
 	benchmarks = map[string]benchmarkFun{
-		"PING": pingBenchmark,
+		"PING": benchmarkWrapper(func(client redis.Conn) (reply interface{}, err error) { return client.Do("PING") }),
 		"SET":  setBenchmark,
+		"GET":  benchmarkWrapper(func(client redis.Conn) (reply interface{}, err error) { return client.Do("GET", "hello") }),
 	}
 )
 
