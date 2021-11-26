@@ -10,14 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/gomodule/redigo/redis"
 )
 
 type statistics struct {
 	hit int64
 }
-
-type benchmarkFun func(stat *statistics, clientNum int, repeatNum int)
 
 type config struct {
 	hostname    string
@@ -31,23 +29,18 @@ type config struct {
 	keep        bool
 	tests       string
 
-	runnableBenchmarks map[string]benchmarkFun
+	runnableBenchmarks map[string]Benchmark
 }
 
 var (
-	conf       config
-	clients    []redis.Conn
-	benchmarks = map[string]benchmarkFun{
-		"PING": benchmarkWrapper(func(client redis.Conn) (reply interface{}, err error) { return client.Do("PING") }),
-		"SET":  setBenchmark,
-		"GET":  benchmarkWrapper(func(client redis.Conn) (reply interface{}, err error) { return client.Do("GET", "hello") }),
-	}
+	conf    config
+	clients []redis.Conn
 )
 
 func init() {
 	flag.IntVar(&conf.clientsNum, "c", 50, "-c <clients>       Number of parallel connections (default 50)")
 	flag.IntVar(&conf.requestsNum, "n", 100000, "-n <requests>      Total number of requests (default 100000)")
-	flag.StringVar(&conf.hostname, "-h", "127.0.0.1", "-h <hostname>      Server hostname (default 127.0.0.1)")
+	flag.StringVar(&conf.hostname, "host", "127.0.0.1", "--host <hostname>      Server hostname (default 127.0.0.1)")
 	flag.IntVar(&conf.port, "p", 6379, "-p <port>          Server port (default 6379)")
 	flag.StringVar(&conf.password, "a", "", "-a <password>      Password for Redis Auth")
 	flag.IntVar(&conf.dbnum, "dbnum", 0, "--dbnum <db>       SELECT the specified db number (default 0)")
@@ -55,10 +48,10 @@ func init() {
                     names are the same as the ones produced as output.`)
 
 	flag.Usage = func() {
-		fmt.Printf(`Usage: redis-bench [-h <host>] [-p <port>] [-c <clients>] [-n <requests>] [-k <boolean>]
+		fmt.Printf(`Usage: redis-bench [--host <host>] [--port <port>] [-c <clients>] [-n <requests>] [-k <boolean>]
 
- -h <hostname>      Server hostname (default 127.0.0.1)
- -p <port>          Server port (default 6379)
+ --host <hostname>      Server hostname (default 127.0.0.1)
+ --port <port>          Server port (default 6379)
  -s <socket>        Server socket (overrides host and port)
  -a <password>      Password for Redis Auth
  -c <clients>       Number of parallel connections (default 50)
@@ -144,21 +137,21 @@ func sanitizeFlag() {
 
 func sanitizeBenchmarks() {
 	if conf.tests == "" {
-		conf.runnableBenchmarks = benchmarks
+		conf.runnableBenchmarks = Benchmarks
 		return
 	}
 
-	conf.runnableBenchmarks = make(map[string]benchmarkFun)
+	conf.runnableBenchmarks = make(map[string]Benchmark)
 	tests := strings.Split(conf.tests, ",")
 	for _, benchmarkName := range tests {
 		benchmarkName = strings.ToUpper(benchmarkName)
-		if benchmarkCall, ok := benchmarks[benchmarkName]; ok {
-			conf.runnableBenchmarks[benchmarkName] = benchmarkCall
+		if benchmark, ok := Benchmarks[benchmarkName]; ok {
+			conf.runnableBenchmarks[benchmarkName] = benchmark
 		}
 	}
 }
 
-func createClients() (client redis.Conn, err error) {
+func createClient() (client redis.Conn, err error) {
 	if client, err = redis.Dial("tcp", fmt.Sprintf("%s:%d", conf.hostname, conf.port)); err != nil {
 		return
 	}
@@ -176,7 +169,7 @@ func createClients() (client redis.Conn, err error) {
 func initClients() {
 	clients = make([]redis.Conn, conf.clientsNum)
 	for i := 0; i < conf.clientsNum; i++ {
-		client, err := createClients()
+		client, err := createClient()
 		if err != nil {
 			fmt.Println("Connect to redis error", err)
 			destroyClients(i)
@@ -195,7 +188,7 @@ func destroyClients(activeClients int) {
 func dumpConf() {
 }
 
-func runBenchmark(benchmarkName string, benchmarkCall benchmarkFun) {
+func runBenchmark(benchmarkName string, benchmark Benchmark) {
 	var benchmakrWG sync.WaitGroup
 	var wg sync.WaitGroup
 	var stat statistics
@@ -204,7 +197,7 @@ func runBenchmark(benchmarkName string, benchmarkCall benchmarkFun) {
 	for i := 0; i < conf.clientsNum; i++ {
 		benchmakrWG.Add(1)
 		go func(clientNum int) {
-			benchmarkCall(&stat, clientNum, conf.requestsNum/conf.clientsNum)
+			benchmark.Run(&stat, clients[clientNum], conf.requestsNum/conf.clientsNum)
 			benchmakrWG.Done()
 		}(i)
 	}
@@ -225,8 +218,8 @@ func runBenchmark(benchmarkName string, benchmarkCall benchmarkFun) {
 }
 
 func runBenchmarks() {
-	for benchmarkName, benchmarkCall := range conf.runnableBenchmarks {
-		runBenchmark(benchmarkName, benchmarkCall)
+	for benchmarkName, benchmark := range conf.runnableBenchmarks {
+		runBenchmark(benchmarkName, benchmark)
 	}
 }
 
